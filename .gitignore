@@ -2,5 +2,6 @@
 __pycache__/
 *.pyc
 data/output/
+data/*.graphml
 node_modules/
 .env
