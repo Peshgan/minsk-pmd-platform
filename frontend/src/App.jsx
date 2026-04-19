@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import DeckGL from '@deck.gl/react'
 import { Map } from 'react-map-gl/maplibre'
-import { H3HexagonLayer } from '@deck.gl/geo-layers'
-import { PathLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { H3HexagonLayer, TripsLayer } from '@deck.gl/geo-layers'
+import { PathLayer } from '@deck.gl/layers'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
@@ -16,26 +16,50 @@ const MINSK_VIEW = {
 
 const MAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
+// Animation runs at this many simulation-seconds per real second
+const SIM_SPEED = 8
+const TRAIL_LENGTH = 60   // seconds of trail behind each scooter
+
 function severityColor(sev, maxSev) {
   const t = Math.min(sev / maxSev, 1)
-  const r = Math.round(248 * t + 99 * (1 - t))
-  const g = Math.round(113 * (1 - t) + 99 * (1 - t))
-  const b = Math.round(113 * (1 - t))
-  return [r, g, b, 200]
+  return [
+    Math.round(99 + 149 * t),
+    Math.round(99 * (1 - t)),
+    Math.round(113 * (1 - t)),
+    200,
+  ]
 }
 
 export default function App() {
-  const [allHexes, setAllHexes]         = useState([])
-  const [blindSpots, setBlindSpots]     = useState([])
-  const [dangerSegs, setDangerSegs]     = useState([])
-  const [tooltip, setTooltip]           = useState(null)
-  const [selected, setSelected]         = useState(null)
-  const [viewState, setViewState]       = useState(MINSK_VIEW)
+  const [allHexes, setAllHexes]       = useState([])
+  const [blindSpots, setBlindSpots]   = useState([])
+  const [dangerSegs, setDangerSegs]   = useState([])
+  const [trips, setTrips]             = useState([])
+  const [maxTime, setMaxTime]         = useState(0)
 
-  const [showHeatmap, setShowHeatmap]   = useState(true)
-  const [showBlind, setShowBlind]       = useState(true)
-  const [showDanger, setShowDanger]     = useState(true)
+  const [tooltip, setTooltip]         = useState(null)
+  const [selected, setSelected]       = useState(null)
+  const [viewState, setViewState]     = useState(MINSK_VIEW)
 
+  const [showHeatmap, setShowHeatmap] = useState(true)
+  const [showBlind, setShowBlind]     = useState(true)
+  const [showDanger, setShowDanger]   = useState(false)
+  const [showTrips, setShowTrips]     = useState(true)
+
+  // Animation state
+  const [playing, setPlaying]         = useState(true)
+  const [currentTime, setCurrentTime] = useState(0)
+  const rafRef                        = useRef(null)
+  const lastTsRef                     = useRef(null)
+  const playingRef                    = useRef(true)
+  const currentTimeRef                = useRef(0)
+  const maxTimeRef                    = useRef(1)
+
+  // Keep refs in sync so rAF closure always reads latest values
+  useEffect(() => { playingRef.current = playing }, [playing])
+  useEffect(() => { maxTimeRef.current = maxTime }, [maxTime])
+
+  // Load all data
   useEffect(() => {
     fetch('/data/all_hexes.geojson')
       .then(r => r.json())
@@ -57,6 +81,47 @@ export default function App() {
         speed: f.properties.peak_speed_ms,
         tripId: f.properties.trip_id,
       }))))
+
+    fetch('/data/trips.geojson')
+      .then(r => r.json())
+      .then(fc => {
+        let max = 0
+        const data = fc.features.map(f => {
+          const coords = f.geometry.coordinates
+          const ts = f.properties.timestamps_s
+          const lastT = ts[ts.length - 1]
+          if (lastT > max) max = lastT
+          return {
+            waypoints: coords.map((c, i) => ({ coordinates: c, timestamp: ts[i] })),
+            dangerous: f.properties.has_dangerous_event,
+          }
+        })
+        setTrips(data)
+        setMaxTime(max)
+        maxTimeRef.current = max
+      })
+  }, [])
+
+  // Animation loop — rAF only, no state writes inside the loop itself
+  useEffect(() => {
+    function tick(ts) {
+      if (playingRef.current) {
+        const dt = lastTsRef.current ? (ts - lastTsRef.current) / 1000 : 0
+        lastTsRef.current = ts
+        const next = (currentTimeRef.current + dt * SIM_SPEED) % (maxTimeRef.current || 1)
+        currentTimeRef.current = next
+        setCurrentTime(next)
+      } else {
+        lastTsRef.current = null
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, []) // runs once; reads everything via refs
+
+  const togglePlay = useCallback(() => {
+    setPlaying(p => !p)
   }, [])
 
   const maxCount = allHexes.length ? Math.max(...allHexes.map(h => h.count)) : 1
@@ -73,23 +138,17 @@ export default function App() {
           Math.round(99 + 80 * t),
           Math.round(179 - 100 * t),
           Math.round(255 - 200 * t),
-          Math.round(60 + 140 * t),
+          Math.round(40 + 80 * t),
         ]
       },
       extruded: true,
       getElevation: d => d.count * 0.3,
-      elevationScale: 1,
       pickable: true,
-      onHover: ({ object, x, y }) => {
-        setTooltip(object ? {
-          x, y,
-          title: 'Density hex',
-          rows: [
-            ['Visits', object.count],
-            ['H3 cell', object.hex.slice(0, 12) + '...'],
-          ],
-        } : null)
-      },
+      onHover: ({ object, x, y }) => setTooltip(object ? {
+        x, y,
+        title: 'Density hex',
+        rows: [['Visits', object.count], ['H3', object.hex.slice(0, 14) + '...']],
+      } : null),
     }),
 
     showBlind && new H3HexagonLayer({
@@ -99,26 +158,23 @@ export default function App() {
       getFillColor: d => severityColor(d.severity, maxSev),
       extruded: true,
       getElevation: d => d.severity * 0.5,
-      elevationScale: 1,
       pickable: true,
-      wireframe: false,
-      onHover: ({ object, x, y }) => {
-        setTooltip(object ? {
-          x, y,
-          title: `Blind spot #${object.rank}`,
-          rows: [
-            ['Visits', object.visit_count],
-            ['Severity', object.severity.toFixed(0)],
-            ['Conflict weight', object.conflict_weight.toFixed(1)],
-          ],
-        } : null)
-      },
+      onHover: ({ object, x, y }) => setTooltip(object ? {
+        x, y,
+        title: `Blind spot #${object.rank}`,
+        rows: [
+          ['Visits', object.visit_count],
+          ['Severity', object.severity.toFixed(0)],
+          ['CW', object.conflict_weight.toFixed(1)],
+        ],
+      } : null),
       onClick: ({ object }) => {
         if (!object) return
         setSelected(object.h3_cell)
-        const lat = object.centroid_lat
-        const lon = object.centroid_lon
-        setViewState(vs => ({ ...vs, longitude: lon, latitude: lat, zoom: 14, transitionDuration: 600 }))
+        setViewState(vs => ({
+          ...vs, longitude: object.centroid_lon, latitude: object.centroid_lat,
+          zoom: 14, transitionDuration: 600,
+        }))
       },
     }),
 
@@ -130,17 +186,29 @@ export default function App() {
       getWidth: 4,
       widthMinPixels: 2,
       pickable: true,
-      onHover: ({ object, x, y }) => {
-        setTooltip(object ? {
-          x, y,
-          title: `${object.verdict} segment`,
-          rows: [
-            ['Trip', object.tripId],
-            ['Peak accel', `${object.peak} m/s²`],
-            ['Peak speed', `${(object.speed * 3.6).toFixed(1)} km/h`],
-          ],
-        } : null)
-      },
+      onHover: ({ object, x, y }) => setTooltip(object ? {
+        x, y,
+        title: `${object.verdict} segment`,
+        rows: [
+          ['Trip', object.tripId],
+          ['Peak accel', `${object.peak} m/s\u00b2`],
+          ['Peak speed', `${(object.speed * 3.6).toFixed(1)} km/h`],
+        ],
+      } : null),
+    }),
+
+    showTrips && trips.length > 0 && new TripsLayer({
+      id: 'trips',
+      data: trips,
+      getPath: d => d.waypoints.map(w => w.coordinates),
+      getTimestamps: d => d.waypoints.map(w => w.timestamp),
+      getColor: d => d.dangerous ? [239, 68, 68] : [99, 179, 237],
+      currentTime,
+      trailLength: TRAIL_LENGTH,
+      widthMinPixels: 2,
+      capRounded: true,
+      jointRounded: true,
+      pickable: false,
     }),
   ].filter(Boolean)
 
@@ -150,6 +218,8 @@ export default function App() {
     hexes: allHexes.length,
     blindSpots: blindSpots.length,
   }
+
+  const progress = maxTime > 0 ? currentTime / maxTime : 0
 
   return (
     <div className="dashboard">
@@ -169,6 +239,26 @@ export default function App() {
             <Map mapStyle={MAP_STYLE} />
           </DeckGL>
 
+          {/* Playback bar */}
+          <div className="playbar">
+            <button className="play-btn" onClick={togglePlay} title={playing ? 'Pause' : 'Play'}>
+              {playing ? (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                  <rect x="5" y="4" width="4" height="16" rx="1"/>
+                  <rect x="15" y="4" width="4" height="16" rx="1"/>
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                  <path d="M6 4l14 8-14 8V4z"/>
+                </svg>
+              )}
+            </button>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
+            </div>
+            <span className="time-label">{Math.round(currentTime)}s</span>
+          </div>
+
           {tooltip && (
             <div className="tooltip" style={{ left: tooltip.x + 12, top: tooltip.y - 10 }}>
               <strong>{tooltip.title}</strong>
@@ -186,8 +276,13 @@ export default function App() {
           <div className="sidebar-section">
             <h2>Layers</h2>
             <label className="layer-toggle">
-              <input type="checkbox" checked={showHeatmap} onChange={e => setShowHeatmap(e.target.checked)} />
+              <input type="checkbox" checked={showTrips} onChange={e => setShowTrips(e.target.checked)} />
               <span className="dot" style={{ background: '#63b3ed' }} />
+              Trip replay
+            </label>
+            <label className="layer-toggle">
+              <input type="checkbox" checked={showHeatmap} onChange={e => setShowHeatmap(e.target.checked)} />
+              <span className="dot" style={{ background: '#4299e1' }} />
               Density heatmap
             </label>
             <label className="layer-toggle">
@@ -259,20 +354,20 @@ export default function App() {
             <h2>Legend</h2>
             <div className="legend">
               <div className="legend-row">
-                <div className="legend-swatch" style={{ background: 'linear-gradient(90deg, rgba(99,179,237,0.3), rgba(63,131,248,1))' }} />
-                <span>Visit density</span>
-              </div>
-              <div className="legend-row">
-                <div className="legend-swatch" style={{ background: 'linear-gradient(90deg, #c084fc, #ef4444)' }} />
-                <span>Blind spot severity</span>
+                <div className="legend-swatch" style={{ background: '#63b3ed' }} />
+                <span>Safe trip trail</span>
               </div>
               <div className="legend-row">
                 <div className="legend-swatch" style={{ background: '#ef4444' }} />
-                <span>DANGER segment</span>
+                <span>Dangerous trip trail</span>
               </div>
               <div className="legend-row">
-                <div className="legend-swatch" style={{ background: '#fbbf24' }} />
-                <span>WARN segment</span>
+                <div className="legend-swatch" style={{ background: 'linear-gradient(90deg,rgba(99,179,237,.3),rgba(63,131,248,1))' }} />
+                <span>Visit density</span>
+              </div>
+              <div className="legend-row">
+                <div className="legend-swatch" style={{ background: 'linear-gradient(90deg,#c084fc,#ef4444)' }} />
+                <span>Blind spot severity</span>
               </div>
             </div>
           </div>
