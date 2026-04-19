@@ -16,9 +16,15 @@ const MINSK_VIEW = {
 
 const MAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
-// Animation runs at this many simulation-seconds per real second
 const SIM_SPEED = 8
-const TRAIL_LENGTH = 60   // seconds of trail behind each scooter
+const TRAIL_LENGTH = 60
+
+// 1 USD = 3.27 BYN (апрель 2026, Нацбанк РБ)
+const USD_TO_BYN = 3.27
+
+function usdToByn(usd) {
+  return Math.round(usd * USD_TO_BYN).toLocaleString('ru-RU')
+}
 
 function severityColor(sev, maxSev) {
   const t = Math.min(sev / maxSev, 1)
@@ -46,7 +52,6 @@ export default function App() {
   const [showDanger, setShowDanger]   = useState(false)
   const [showTrips, setShowTrips]     = useState(true)
 
-  // Animation state
   const [playing, setPlaying]         = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const rafRef                        = useRef(null)
@@ -55,24 +60,22 @@ export default function App() {
   const currentTimeRef                = useRef(0)
   const maxTimeRef                    = useRef(1)
 
-  // Keep refs in sync so rAF closure always reads latest values
   useEffect(() => { playingRef.current = playing }, [playing])
   useEffect(() => { maxTimeRef.current = maxTime }, [maxTime])
 
-  // Load all data
   useEffect(() => {
-    fetch('/data/all_hexes.geojson')
+    fetch('data/all_hexes.geojson')
       .then(r => r.json())
       .then(fc => setAllHexes(fc.features.map(f => ({
         hex: f.properties.h3_cell,
         count: f.properties.visit_count,
       }))))
 
-    fetch('/data/blind_spots.geojson')
+    fetch('data/blind_spots.geojson')
       .then(r => r.json())
       .then(fc => setBlindSpots(fc.features.map(f => f.properties)))
 
-    fetch('/data/dangerous_segments.geojson')
+    fetch('data/dangerous_segments.geojson')
       .then(r => r.json())
       .then(fc => setDangerSegs(fc.features.map(f => ({
         path: f.geometry.coordinates,
@@ -82,7 +85,7 @@ export default function App() {
         tripId: f.properties.trip_id,
       }))))
 
-    fetch('/data/trips.geojson')
+    fetch('data/trips.geojson')
       .then(r => r.json())
       .then(fc => {
         let max = 0
@@ -102,7 +105,6 @@ export default function App() {
       })
   }, [])
 
-  // Animation loop — rAF only, no state writes inside the loop itself
   useEffect(() => {
     function tick(ts) {
       if (playingRef.current) {
@@ -118,7 +120,7 @@ export default function App() {
     }
     rafRef.current = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(rafRef.current)
-  }, []) // runs once; reads everything via refs
+  }, [])
 
   const togglePlay = useCallback(() => {
     setPlaying(p => !p)
@@ -146,8 +148,8 @@ export default function App() {
       pickable: true,
       onHover: ({ object, x, y }) => setTooltip(object ? {
         x, y,
-        title: 'Density hex',
-        rows: [['Visits', object.count], ['H3', object.hex.slice(0, 14) + '...']],
+        title: 'Ячейка плотности',
+        rows: [['Визиты', object.count], ['H3', object.hex.slice(0, 14) + '...']],
       } : null),
     }),
 
@@ -161,11 +163,11 @@ export default function App() {
       pickable: true,
       onHover: ({ object, x, y }) => setTooltip(object ? {
         x, y,
-        title: `Blind spot #${object.rank}`,
+        title: `Слепая зона #${object.rank}`,
         rows: [
-          ['Visits', object.visit_count],
-          ['Severity', object.severity.toFixed(0)],
-          ['CW', object.conflict_weight.toFixed(1)],
+          ['Визиты', object.visit_count],
+          ['Индекс', object.severity.toFixed(0)],
+          ['Коэф. опасности', object.conflict_weight.toFixed(1)],
         ],
       } : null),
       onClick: ({ object }) => {
@@ -188,11 +190,11 @@ export default function App() {
       pickable: true,
       onHover: ({ object, x, y }) => setTooltip(object ? {
         x, y,
-        title: `${object.verdict} segment`,
+        title: object.verdict === 'DANGER' ? 'Опасный сегмент' : 'Предупреждение',
         rows: [
-          ['Trip', object.tripId],
-          ['Peak accel', `${object.peak} m/s\u00b2`],
-          ['Peak speed', `${(object.speed * 3.6).toFixed(1)} km/h`],
+          ['Поездка', object.tripId],
+          ['Макс. ускорение', `${object.peak} м/с\u00b2`],
+          ['Макс. скорость', `${(object.speed * 3.6).toFixed(1)} км/ч`],
         ],
       } : null),
     }),
@@ -224,8 +226,8 @@ export default function App() {
   return (
     <div className="dashboard">
       <div className="topbar">
-        <h1>PMD Analytics Dashboard — Minsk</h1>
-        <span>500 synthetic scooter trips | H3 res-9</span>
+        <h1>Аналитика СИМ — Минск</h1>
+        <span>500 синтетических поездок на самокатах&nbsp;·&nbsp;H3 уровень 9&nbsp;·&nbsp;OSM Минск</span>
       </div>
 
       <div className="main">
@@ -239,9 +241,9 @@ export default function App() {
             <Map mapStyle={MAP_STYLE} />
           </DeckGL>
 
-          {/* Playback bar */}
+          {/* Панель воспроизведения */}
           <div className="playbar">
-            <button className="play-btn" onClick={togglePlay} title={playing ? 'Pause' : 'Play'}>
+            <button className="play-btn" onClick={togglePlay} title={playing ? 'Пауза' : 'Воспроизвести'}>
               {playing ? (
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                   <rect x="5" y="4" width="4" height="16" rx="1"/>
@@ -256,7 +258,7 @@ export default function App() {
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
             </div>
-            <span className="time-label">{Math.round(currentTime)}s</span>
+            <span className="time-label">{Math.round(currentTime)}с</span>
           </div>
 
           {tooltip && (
@@ -273,54 +275,57 @@ export default function App() {
         </div>
 
         <div className="sidebar">
+          {/* Слои */}
           <div className="sidebar-section">
-            <h2>Layers</h2>
+            <h2>Слои</h2>
             <label className="layer-toggle">
               <input type="checkbox" checked={showTrips} onChange={e => setShowTrips(e.target.checked)} />
               <span className="dot" style={{ background: '#63b3ed' }} />
-              Trip replay
+              Воспроизведение поездок
             </label>
             <label className="layer-toggle">
               <input type="checkbox" checked={showHeatmap} onChange={e => setShowHeatmap(e.target.checked)} />
               <span className="dot" style={{ background: '#4299e1' }} />
-              Density heatmap
+              Тепловая карта плотности
             </label>
             <label className="layer-toggle">
               <input type="checkbox" checked={showBlind} onChange={e => setShowBlind(e.target.checked)} />
               <span className="dot" style={{ background: '#f87171' }} />
-              Blind spots (top 10)
+              Слепые зоны (топ-10)
             </label>
             <label className="layer-toggle">
               <input type="checkbox" checked={showDanger} onChange={e => setShowDanger(e.target.checked)} />
               <span className="dot" style={{ background: '#ef4444' }} />
-              Dangerous segments
+              Опасные сегменты
             </label>
           </div>
 
+          {/* Статистика */}
           <div className="sidebar-section">
-            <h2>Stats</h2>
+            <h2>Статистика</h2>
             <div className="stats-grid">
               <div className="stat-card">
                 <div className="value">{stats.trips}</div>
-                <div className="label">Total trips</div>
+                <div className="label">Поездок всего</div>
               </div>
               <div className="stat-card">
                 <div className="value" style={{ color: '#f87171' }}>{stats.dangerous}</div>
-                <div className="label">Dangerous</div>
+                <div className="label">Опасных</div>
               </div>
               <div className="stat-card">
-                <div className="value">{stats.hexes.toLocaleString()}</div>
-                <div className="label">H3 hexagons</div>
+                <div className="value">{stats.hexes.toLocaleString('ru-RU')}</div>
+                <div className="label">Ячеек H3</div>
               </div>
               <div className="stat-card">
                 <div className="value" style={{ color: '#f87171' }}>{stats.blindSpots}</div>
-                <div className="label">Blind spots</div>
+                <div className="label">Слепых зон</div>
               </div>
             </div>
           </div>
 
+          {/* Топ-10 слепых зон */}
           <div className="sidebar-section">
-            <h2>Top-10 Blind Spots</h2>
+            <h2>Топ-10 слепых зон</h2>
             <div className="blind-spot-list">
               {blindSpots
                 .slice()
@@ -341,34 +346,95 @@ export default function App() {
                     }}
                   >
                     <div className="rank">#{bs.rank}</div>
-                    <div className="severity">Severity {bs.severity.toFixed(0)}</div>
+                    <div className="severity">Индекс {bs.severity.toFixed(0)}</div>
                     <div className="meta">
-                      {bs.visit_count} visits &middot; CW {bs.conflict_weight.toFixed(1)}
+                      {bs.visit_count} визитов · КО {bs.conflict_weight.toFixed(1)}
                     </div>
                   </div>
                 ))}
             </div>
           </div>
 
+          {/* Легенда */}
           <div className="sidebar-section">
-            <h2>Legend</h2>
+            <h2>Легенда</h2>
             <div className="legend">
               <div className="legend-row">
                 <div className="legend-swatch" style={{ background: '#63b3ed' }} />
-                <span>Safe trip trail</span>
+                <span>Безопасная поездка</span>
               </div>
               <div className="legend-row">
                 <div className="legend-swatch" style={{ background: '#ef4444' }} />
-                <span>Dangerous trip trail</span>
+                <span>Опасная поездка</span>
               </div>
               <div className="legend-row">
                 <div className="legend-swatch" style={{ background: 'linear-gradient(90deg,rgba(99,179,237,.3),rgba(63,131,248,1))' }} />
-                <span>Visit density</span>
+                <span>Плотность трафика</span>
               </div>
               <div className="legend-row">
                 <div className="legend-swatch" style={{ background: 'linear-gradient(90deg,#c084fc,#ef4444)' }} />
-                <span>Blind spot severity</span>
+                <span>Опасность слепой зоны</span>
               </div>
+            </div>
+          </div>
+
+          {/* Экономика */}
+          <div className="sidebar-section">
+            <h2>Экономика платформы</h2>
+            <div className="econ-table">
+              <div className="econ-row">
+                <span>ТЦВ (3 года)</span>
+                <span className="econ-val">{usdToByn(92120)} BYN</span>
+              </div>
+              <div className="econ-row">
+                <span>Окупаемость</span>
+                <span className="econ-val">2,2 мес.</span>
+              </div>
+              <div className="econ-row">
+                <span>1 ДТП с пострадавшими</span>
+                <span className="econ-val">{usdToByn(8000)} BYN</span>
+              </div>
+              <div className="econ-row">
+                <span>Курс</span>
+                <span className="econ-val">1 USD = {USD_TO_BYN} BYN</span>
+              </div>
+            </div>
+          </div>
+
+          {/* О проекте */}
+          <div className="sidebar-section">
+            <h2>О проекте</h2>
+            <div className="about-text">
+              <p>Дипломный проект БНТУ, 2026. Цифровая платформа сбора и анализа данных о движении средств индивидуальной мобильности (СИМ) в Минске.</p>
+              <div className="about-layers">
+                <div className="about-item">
+                  <span className="about-dot" style={{ background: '#63b3ed' }} />
+                  <div>
+                    <b>Поездки</b> — анимация 500 маршрутов. Алгоритм A детектирует опасное вождение по ускорению (|a| ≥ 3,5 м/с²). F1&nbsp;=&nbsp;0,990.
+                  </div>
+                </div>
+                <div className="about-item">
+                  <span className="about-dot" style={{ background: '#4299e1' }} />
+                  <div>
+                    <b>Тепловая карта</b> — шестиугольная сетка H3 (ребро 174 м). Высота и цвет пропорциональны числу визитов самокатов.
+                  </div>
+                </div>
+                <div className="about-item">
+                  <span className="about-dot" style={{ background: '#f87171' }} />
+                  <div>
+                    <b>Слепые зоны</b> — Алгоритм B. Зоны с трафиком выше P75 и без велоинфраструктуры по OSM. Найдено 369 из 369 (100%).
+                  </div>
+                </div>
+                <div className="about-item">
+                  <span className="about-dot" style={{ background: '#ef4444' }} />
+                  <div>
+                    <b>Опасные сегменты</b> — участки с резким торможением или разгоном. Красный&nbsp;— DANGER, жёлтый&nbsp;— WARN.
+                  </div>
+                </div>
+              </div>
+              <p className="about-footer">
+                Данные: OSM Минск · 365 925 GPS-точек · H3 res-9
+              </p>
             </div>
           </div>
         </div>
